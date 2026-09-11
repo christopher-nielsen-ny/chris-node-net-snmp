@@ -3773,6 +3773,12 @@ Example programs are included under the module's `example` directory.
 
  * Discard SNMPv3 responses that fall outside the USM time window, reported as the new `ResponseInvalidCode.ENotInTimeWindow`
 
+# Version 3.28.0 - 11/09/2026
+
+ * Add an `rinfo` attribute to errors that a receiver or agent produces while processing a received packet - covering unknown community and unknown user authorization failures, authentication and privacy level mismatches, digest and decryption failures, and unsupported PDU type rejections - so the sender of an offending packet can be identified
+
+ * Replace `.npmignore` with a `files` allowlist in `package.json`, so the published package ships only the module, its libraries, examples and reference files
+
 # License
 
 Copyright (c) 2020 Mark Abrahams <mark@abrahams.co.nz>
