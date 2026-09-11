@@ -351,6 +351,7 @@ Actions
 - `11 -  EUnexpectedReport`
 - `12 -  EResponseNotHandled`
 - `13 -  EUnexpectedResponse`
+- `14 -  ENotInTimeWindow`
 
 ## snmp.OidFormat
 - `oid - oid`
@@ -3754,6 +3755,12 @@ Example programs are included under the module's `example` directory.
 # Version 3.26.3 - 21/04/2026
 
  * Document how MIB scalar and table handlers should interact with `mibRequest.instanceNode.value` for Get vs Set operations
+
+# Version 3.27.0 - 11/09/2026
+
+ * Fix SNMPv3 requests being rejected with `usmStatsNotInTimeWindows` once a session has been open for a while - the authoritative engine time is now advanced with a monotonic local clock and resynchronised from every authenticated response, instead of staying frozen at the value learned during discovery
+
+ * Discard SNMPv3 responses that fall outside the USM time window, reported as the new `ResponseInvalidCode.ENotInTimeWindow`
 
 # License
 

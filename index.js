@@ -9,9 +9,12 @@ const util = require ("util");
 const crypto = require ("crypto");
 const mibparser = require ("./lib/mib");
 const Buffer = require('buffer').Buffer;
+const { performance } = require ("perf_hooks");
 
 var DEBUG = false;
 var STRICT_INT_RANGE_CHECKS = false;
+
+const USM_TIME_WINDOW_SECONDS = 150;
 
 const MIN_SIGNED_INT32 = -2147483648;
 const MAX_SIGNED_INT32 = 2147483647;
@@ -280,7 +283,8 @@ var ResponseInvalidCode = {
 	10: "ECommunityNoMatch",
 	11: "EUnexpectedReport",
 	12: "EResponseNotHandled",
-	13: "EUnexpectedResponse"
+	13: "EUnexpectedResponse",
+	14: "ENotInTimeWindow"
 };
 
 _expandConstantObject (ResponseInvalidCode);
@@ -2084,6 +2088,18 @@ var Session = function (target, authenticator, options) {
 	this.reqs = {};
 	this.reqCount = 0;
 
+	// Local notion of the authoritative (remote) engine's snmpEngineBoots and
+	// snmpEngineTime, per RFC 3414 section 2.3.  engineTimeBase is the
+	// snmpEngineTime learned at engineTimeReceivedAt (a monotonic millisecond
+	// reading), and the current notion is derived from the two by
+	// getEngineTime().  latestReceivedEngineTime is the highest snmpEngineTime
+	// ever received from the authoritative engine, and exists solely to stop a
+	// replayed message from holding our notion of time back.
+	this.engineTimeBoots = null;
+	this.engineTimeBase = null;
+	this.engineTimeReceivedAt = null;
+	this.latestReceivedEngineTime = null;
+
 	const dgramMod = options.dgramModule || dgram;
 	this.dgram = dgramMod.createSocket (this.transport);
 	this.dgram.unref();
@@ -2424,6 +2440,21 @@ Session.prototype.onMsg = function (buffer) {
 
 	if ( ! message.processIncomingSecurity (this.user, req.responseCb) )
 		return;
+
+	// RFC 3414 sections 2.3 and 3.2 step 7b: synchronise our notion of the
+	// authoritative engine's time from this message, then discard the message if
+	// it falls outside the time window.  Both are no-ops for SNMPv1 and v2c, and
+	// for v3 messages which were not authenticated.
+	this.setEngineTime (message);
+	if ( ! this.isInTimeWindow (message) ) {
+		req.responseCb (new ResponseInvalidError ("Message with engineBoots '"
+				+ message.msgSecurityParameters.msgAuthoritativeEngineBoots
+				+ "' and engineTime '" + message.msgSecurityParameters.msgAuthoritativeEngineTime
+				+ "' is outside the time window of engineBoots '" + this.engineTimeBoots
+				+ "' and engineTime '" + this.getEngineTime ().engineTime + "'",
+				ResponseInvalidCode.ENotInTimeWindow));
+		return;
+	}
 
 	if (message.version != req.message.version) {
 		req.responseCb (new ResponseInvalidError ("Version in request '"
@@ -2974,7 +3005,93 @@ Session.prototype.walk  = function () {
 	return this;
 };
 
+// RFC 3414 section 2.3: between authentic messages, the non-authoritative
+// engine's notion of the authoritative engine's snmpEngineTime advances with
+// the local clock.  A monotonic clock source is used, so that a step of the
+// system clock cannot move our notion of time.  Returns null while no notion
+// has been established.
+Session.prototype.getEngineTime = function () {
+	if ( this.engineTimeReceivedAt == null )
+		return null;
+	var elapsedSeconds = Math.floor ((performance.now () - this.engineTimeReceivedAt) / 1000);
+	var engineBoots = this.engineTimeBoots;
+	var engineTime = this.engineTimeBase + elapsedSeconds;
+	// RFC 3414 section 2.2.2: when snmpEngineTime reaches its maximum value,
+	// snmpEngineBoots is incremented and snmpEngineTime is reset to zero.
+	// snmpEngineBoots latches at its maximum value and never wraps.
+	if ( engineTime > MAX_SIGNED_INT32 ) {
+		engineBoots = Math.min (engineBoots + Math.floor (engineTime / (MAX_SIGNED_INT32 + 1)),
+				MAX_SIGNED_INT32);
+		engineTime = engineTime % (MAX_SIGNED_INT32 + 1);
+	}
+	return {
+		engineBoots: engineBoots,
+		engineTime: engineTime
+	};
+};
+
+// RFC 3414 section 3.2 step 7b(1): update our notion of the authoritative
+// engine's time from an authentic message, but only when that message advances
+// it - either snmpEngineBoots has increased, or snmpEngineTime is higher than
+// any snmpEngineTime yet seen for the current snmpEngineBoots.  The latter
+// comparison is against the highest value received rather than against our
+// locally advanced notion, so that a fast local clock cannot lock the session
+// out of ever resynchronising.
+Session.prototype.setEngineTime = function (message) {
+	var params = message.msgSecurityParameters;
+	if ( ! params || ! message.hasAuthentication () )
+		return;
+	var engineBoots = params.msgAuthoritativeEngineBoots;
+	var engineTime = params.msgAuthoritativeEngineTime;
+	var advances = this.engineTimeBoots == null
+			|| engineBoots > this.engineTimeBoots
+			|| ( engineBoots == this.engineTimeBoots
+				&& engineTime > this.latestReceivedEngineTime );
+	if ( ! advances )
+		return;
+	this.engineTimeBoots = engineBoots;
+	this.engineTimeBase = engineTime;
+	this.latestReceivedEngineTime = engineTime;
+	this.engineTimeReceivedAt = performance.now ();
+};
+
+// RFC 3414 section 3.2 step 7b(2): an authentic message from the authoritative
+// engine is outside the time window - and so must be discarded - if our notion
+// of its snmpEngineBoots has latched at its maximum value, if the message
+// disagrees with our notion of snmpEngineBoots, or if it disagrees with our
+// notion of snmpEngineTime by more than the time window.  This must be
+// evaluated after setEngineTime (), so that a message which legitimately
+// advances our notion of time is never rejected by it.
+Session.prototype.isInTimeWindow = function (message) {
+	var params = message.msgSecurityParameters;
+	if ( ! params || ! message.hasAuthentication () )
+		return true;
+	var notion = this.getEngineTime ();
+	if ( ! notion )
+		return true;
+	if ( notion.engineBoots == MAX_SIGNED_INT32 )
+		return false;
+	if ( params.msgAuthoritativeEngineBoots != notion.engineBoots )
+		return false;
+	return Math.abs (params.msgAuthoritativeEngineTime - notion.engineTime)
+			<= USM_TIME_WINDOW_SECONDS;
+};
+
+// RFC 3414 section 2.3: an outgoing request carries our current notion of the
+// authoritative engine's snmpEngineBoots and snmpEngineTime, not the values
+// learned when the session was first synchronised.
+Session.prototype.advanceEngineTime = function () {
+	if ( ! this.msgSecurityParameters )
+		return;
+	var notion = this.getEngineTime ();
+	if ( ! notion )
+		return;
+	this.msgSecurityParameters.msgAuthoritativeEngineBoots = notion.engineBoots;
+	this.msgSecurityParameters.msgAuthoritativeEngineTime = notion.engineTime;
+};
+
 Session.prototype.sendV3Req = function (pdu, feedCb, responseCb, options, port, allowReport) {
+	this.advanceEngineTime ();
 	var message = Message.createRequestV3 (this.user, this.msgSecurityParameters, pdu);
 	var reqOptions = options || {};
 	var req = new Req (this, message, feedCb, responseCb, reqOptions);
