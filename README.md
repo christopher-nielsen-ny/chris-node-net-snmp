@@ -1556,7 +1556,11 @@ an object, possibly empty, and can contain the following fields:
 
 The `callback` parameter is a callback function of the form
 `function (error, notification)`.  On an error condition, the `notification`
-parameter is set to `null`.  On successful reception of a notification, the error
+parameter is set to `null`.  Where the error was produced while processing a
+received packet - such as an authorization failure for a community or user
+not in the receiver's local authorization lists - the error will include an
+`rinfo` attribute containing the sender socket details of the offending packet.
+On successful reception of a notification, the error
 parameter is set to `null`, and the `notification` parameter is set as an object
 with the notification PDU details in the `pdu` field and the sender socket details
 in the `rinfo` field.  For example:
@@ -1678,6 +1682,11 @@ an object, possibly empty, and can contain the following fields:
  * `mibOptions` - a MIB options object that is passed to the `Mib` instance - see the MIB section
  for further details on this - defaults to the empty object.
 
+As for the receiver, errors that the agent produces while processing a received
+packet - such as an authorization failure, or a request the agent cannot serve -
+include an `rinfo` attribute containing the sender socket details of the offending
+packet.
+
 The `mib` parameter is optional, and sets the agent's singleton `Mib` instance.
 If not supplied, the agent creates itself a new empty `Mib` singleton.  If supplied,
 the `Mib` instance needs to be created and populated as per the [Mib Module](#mib-module)
@@ -1724,7 +1733,9 @@ receiver's community authorization list, the receiver will not accept the notifi
 instead returning a error of class `RequestFailedError` to the supplied callback
 function.  Similarly, if a v3 notification is received with a user whose name is
 not in the receiver's user authorization list, the receiver will return a
-`RequestFailedError`.  If the `disableAuthorization` option is supplied for the
+`RequestFailedError`.  These errors include an `rinfo` attribute containing the
+sender socket details of the unauthorized packet, so that its origin can be
+identified.  If the `disableAuthorization` option is supplied for the
 receiver on start-up, then these local authorization list checks are disabled for
 community notifications and noAuthNoPriv user notifications.  Note that even with
 this setting, the user list is *still checked* for authNoPriv and authPriv notifications,

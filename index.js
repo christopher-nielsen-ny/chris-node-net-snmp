@@ -3258,6 +3258,17 @@ Listener.formatCallbackData = function (pdu, rinfo) {
 	};
 };
 
+// Returns a callback that annotates errors with the origin of the packet being
+// processed, so consumers can identify the source of unauthorized or invalid messages
+Listener.rinfoErrorCallback = function (target, rinfo) {
+	return function (error, data) {
+		if ( error && rinfo && ! error.rinfo ) {
+			error.rinfo = rinfo;
+		}
+		target.callback (error, data);
+	};
+};
+
 Listener.processIncoming = function (buffer, authorizer, callback) {
 	var message = Message.createFromBuffer (buffer);
 	var community;
@@ -3564,12 +3575,13 @@ Receiver.prototype.getAuthorizer = function () {
 
 Receiver.prototype.onMsg = function (socket, buffer, rinfo) {
 
+	const callback = Listener.rinfoErrorCallback (this, rinfo);
 	let message;
 
 	try {
-		message = Listener.processIncoming (buffer, this.authorizer, this.callback);
+		message = Listener.processIncoming (buffer, this.authorizer, callback);
 	} catch (error) {
-		this.callback (new ProcessingError ("Failure to process incoming message", error, rinfo, buffer));
+		callback (new ProcessingError ("Failure to process incoming message", error, rinfo, buffer));
 		return;
 	}
 
@@ -3586,13 +3598,13 @@ Receiver.prototype.onMsg = function (socket, buffer, rinfo) {
 	// The only GetRequest PDUs supported are those used for SNMPv3 discovery
 	if ( message.pdu.type == PduType.GetRequest ) {
 		if ( message.version != Version3 ) {
-			this.callback (new RequestInvalidError ("Only SNMPv3 discovery GetRequests are supported"));
+			callback (new RequestInvalidError ("Only SNMPv3 discovery GetRequests are supported"));
 			return;
 		} else if ( message.hasAuthentication() ) {
-			this.callback (new RequestInvalidError ("Only discovery (noAuthNoPriv) GetRequests are supported but this message has authentication"));
+			callback (new RequestInvalidError ("Only discovery (noAuthNoPriv) GetRequests are supported but this message has authentication"));
 			return;
 		} else if ( ! message.isReportable () ) {
-			this.callback (new RequestInvalidError ("Only discovery GetRequests are supported and this message does not have the reportable flag set"));
+			callback (new RequestInvalidError ("Only discovery GetRequests are supported and this message does not have the reportable flag set"));
 			return;
 		}
 		let reportMessage = message.createReportResponseMessage (this.engine, this.context, UsmErrorType.UNKNOWN_ENGINE_ID);
@@ -3603,16 +3615,16 @@ Receiver.prototype.onMsg = function (socket, buffer, rinfo) {
 	// Inform/trap processing
 	// debug (JSON.stringify (message.pdu, null, 2));
 	if ( message.pdu.type == PduType.Trap || message.pdu.type == PduType.TrapV2 ) {
-		this.callback (null, this.formatCallbackData (message, rinfo) );
+		callback (null, this.formatCallbackData (message, rinfo) );
 	} else if ( message.pdu.type == PduType.InformRequest ) {
 		message.pdu.type = PduType.GetResponse;
 		message.buffer = null;
 		message.setReportable (false);
 		this.listener.send (message, rinfo, socket);
 		message.pdu.type = PduType.InformRequest;
-		this.callback (null, this.formatCallbackData (message, rinfo) );
+		callback (null, this.formatCallbackData (message, rinfo) );
 	} else {
-		this.callback (new RequestInvalidError ("Unexpected PDU type " + message.pdu.type + " (" + PduType[message.pdu.type] + ")"));
+		callback (new RequestInvalidError ("Unexpected PDU type " + message.pdu.type + " (" + PduType[message.pdu.type] + ")"));
 	}
 };
 
@@ -5160,12 +5172,13 @@ Agent.prototype.tableRowStatusHandlerInternal = function (createRequest) {
 
 Agent.prototype.onMsg = function (socket, buffer, rinfo) {
 
+	const callback = Listener.rinfoErrorCallback (this, rinfo);
 	let message;
 
 	try {
-		message = Listener.processIncoming (buffer, this.authorizer, this.callback);
+		message = Listener.processIncoming (buffer, this.authorizer, callback);
 	} catch (error) {
-		this.callback (new ProcessingError ("Failure to process incoming message", error, rinfo, buffer));
+		callback (new ProcessingError ("Failure to process incoming message", error, rinfo, buffer));
 		return;
 	}
 
@@ -5200,7 +5213,7 @@ Agent.prototype.onMsg = function (socket, buffer, rinfo) {
 	} else if ( message.pdu.type == PduType.GetBulkRequest ) {
 		this.getBulkRequest (socket, message, rinfo);
 	} else {
-		this.callback (new RequestInvalidError ("Unexpected PDU type " +
+		callback (new RequestInvalidError ("Unexpected PDU type " +
 			message.pdu.type + " (" + PduType[message.pdu.type] + ")"));
 	}
 };
