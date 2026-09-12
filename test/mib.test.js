@@ -125,6 +125,31 @@ describe('MIB', function () {
         });
     });
 
+    describe('table index encoding', function () {
+        // An index part with a fixed `length` is encoded without a leading
+        // length component, so it has to be decoded the same way. The decoder
+        // used to consume a length component regardless, reading "AB" back as
+        // "B". See issue #305.
+        it('round-trips a fixed-length OctetString index', function () {
+            mib = snmp.createMib();
+            mib.registerProvider({
+                name: 'fixedLengthIndexTable',
+                type: snmp.MibProviderType.Table,
+                oid: '1.3.6.1.4.1.8072.9998.1',
+                tableColumns: [
+                    { number: 1, name: 'flitIndex', type: snmp.ObjectType.OctetString,
+                        maxAccess: snmp.MaxAccess['not-accessible'] },
+                    { number: 2, name: 'fitValue', type: snmp.ObjectType.Integer,
+                        maxAccess: snmp.MaxAccess['read-write'] }
+                ],
+                tableIndex: [ { columnNumber: 1, type: snmp.ObjectType.OctetString, length: 2 } ]
+            });
+            mib.addTableRow('fixedLengthIndexTable', ['AB', 42]);
+            const data = mib.getTableCells('fixedLengthIndexTable', true, true);
+            assert.deepEqual(data, [[ ['AB'], 42 ]]);
+        });
+    });
+
     describe('registerProvider() - scalar defVal', function () {
         it('adds a scalar value on registration', function () {
             const options = {

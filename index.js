@@ -4707,40 +4707,72 @@ Mib.prototype.getTableRowInstanceFromRow = function (provider, row) {
 	return rowIndex;
 };
 
+// Splices exactly `length` components off the front of an index address,
+// rejecting encodings that claim more components than they supply.
+Mib.spliceIndexValue = function (addressRemaining, length, oid) {
+	var value = addressRemaining.splice (0, length);
+	if ( value.length !== length ) {
+		throw new RangeError ("Index encoding in \"" + oid + "\" claims " + length +
+			" components but supplies " + value.length);
+	}
+	return value;
+};
+
+// Determines how many OID components an index part occupies, consuming a
+// leading length component for variable-length parts that are neither
+// implied nor of a fixed length.
+Mib.getIndexPartLength = function (indexPart, addressRemaining, oid) {
+	var length;
+	if ( indexPart.implied ) {
+		return addressRemaining.length;
+	}
+	if ( indexPart.length ) {
+		return indexPart.length;
+	}
+	length = Number (addressRemaining.shift ());
+	if ( ! Number.isInteger (length) || length < 0 ) {
+		throw new RangeError ("Index encoding in \"" + oid + "\" has a missing or invalid length component");
+	}
+	return length;
+};
+
 Mib.getRowIndexFromOid = function (oid, index) {
-	var addressRemaining = oid.split (".");
+	var addressRemaining = oid === "" ? [] : oid.split (".");
 	var length = 0;
 	var values = [];
 	var value;
 	for ( var indexPart of index ) {
 		switch ( indexPart.type ) {
 			case ObjectType.OID:
-				if ( indexPart.implied ) {
-					length = addressRemaining.length;
-				} else {
-					length = addressRemaining.shift ();
-				}
-				value = addressRemaining.splice (0, length);
+				length = Mib.getIndexPartLength (indexPart, addressRemaining, oid);
+				value = Mib.spliceIndexValue (addressRemaining, length, oid);
 				values.push (value.join ("."));
 				break;
 			case ObjectType.IpAddress:
 				length = 4;
-				value = addressRemaining.splice (0, length);
+				value = Mib.spliceIndexValue (addressRemaining, length, oid);
 				values.push (value.join ("."));
 				break;
 			case ObjectType.OctetString:
-				if ( indexPart.implied ) {
-					length = addressRemaining.length;
-				} else {
-					length = addressRemaining.shift ();
-				}
-				value = addressRemaining.splice (0, length);
+				length = Mib.getIndexPartLength (indexPart, addressRemaining, oid);
+				value = Mib.spliceIndexValue (addressRemaining, length, oid);
 				value = value.map (c => String.fromCharCode(c)).join ("");
 				values.push (value);
 				break;
 			default:
-				values.push (parseInt (addressRemaining.shift ()) );
+				if ( addressRemaining.length === 0 ) {
+					throw new RangeError ("Index encoding in \"" + oid + "\" is missing a component");
+				}
+				value = parseInt (addressRemaining.shift ());
+				if ( Number.isNaN (value) ) {
+					throw new RangeError ("Index encoding in \"" + oid + "\" has a non-numeric component");
+				}
+				values.push (value);
 		}
+	}
+	if ( addressRemaining.length > 0 ) {
+		throw new RangeError ("Index encoding in \"" + oid + "\" has " + addressRemaining.length +
+			" unexpected trailing component(s)");
 	}
 	return values;
 };
@@ -5297,7 +5329,15 @@ Agent.prototype.tryCreateInstance = function (varbind, requestType) {
 			subOid = Mib.getSubOidFromBaseOid (oid, provider.oid);
 			subAddr = subOid.split(".");
 			column = parseInt(subAddr.shift(), 10);
-			row = Mib.getRowIndexFromOid(subAddr.join("."), provider.tableIndex);
+			try {
+				row = Mib.getRowIndexFromOid(subAddr.join("."), provider.tableIndex);
+			} catch (error) {
+				// The OID is not a valid index encoding for this table, so it names no
+				// row and there is nothing to create. Leave the varbind to be answered
+				// as NoSuchInstance.
+				debug (error);
+				return undefined;
+			}
 			rowStatusColumn = provider.tableColumns.reduce( (acc, current) => current.rowStatus ? current.number : acc, null );
 
 			if ( requestType === PduType.SetRequest &&

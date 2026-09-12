@@ -3779,6 +3779,12 @@ Example programs are included under the module's `example` directory.
 
  * Replace `.npmignore` with a `files` allowlist in `package.json`, so the published package ships only the module, its libraries, examples and reference files
 
+# Version 3.28.1 - 12/09/2026
+
+ * Reject table instance OIDs whose row index encoding is malformed, instead of silently decoding them to a different row - a SetRequest naming a non-implied `OctetString` or OID index that claimed a different length than it supplied, or that carried unexpected trailing components, would create a row at the decoded index while answering `NoSuchInstance` for the OID that was requested
+
+ * Decode index parts declared with a fixed `length` without consuming a leading length component, matching the way they are encoded - an index value of `AB` in such a column previously read back as `B`
+
 # License
 
 Copyright (c) 2020 Mark Abrahams <mark@abrahams.co.nz>
