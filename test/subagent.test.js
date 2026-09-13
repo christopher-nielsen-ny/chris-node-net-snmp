@@ -349,6 +349,95 @@ describe('Subagent', function() {
              });
          });
 
+         describe('MAX-ACCESS Error Status', function() {
+             // A TestSet refused by MAX-ACCESS is notWritable, not noAccess -
+             // RFC 3416 section 4.2.5 rule (2), and RFC 2741 section 7.2.1.4
+             // for the AgentX test phase. Reads keep noAccess. See issue #306.
+
+             const readOnlyOid = '1.3.6.1.4.1.8072.9999.3.3.1';
+             const readWriteOid = '1.3.6.1.4.1.8072.9999.3.2.1';
+             const notifyOnlyOid = '1.3.6.1.4.1.8072.9999.3.4.1';
+
+             beforeEach(function() {
+                 subagent.getMib().registerProvider({
+                     name: "accessTable",
+                     type: snmp.MibProviderType.Table,
+                     oid: "1.3.6.1.4.1.8072.9999.3",
+                     maxAccess: snmp.MaxAccess['not-accessible'],
+                     tableColumns: [
+                         {
+                             number: 1,
+                             name: "atIndex",
+                             type: snmp.ObjectType.Integer,
+                             maxAccess: snmp.MaxAccess['not-accessible']
+                         },
+                         {
+                             number: 2,
+                             name: "atReadWrite",
+                             type: snmp.ObjectType.Integer,
+                             maxAccess: snmp.MaxAccess['read-write']
+                         },
+                         {
+                             number: 3,
+                             name: "atReadOnly",
+                             type: snmp.ObjectType.Integer,
+                             maxAccess: snmp.MaxAccess['read-only']
+                         },
+                         {
+                             number: 4,
+                             name: "atNotifyOnly",
+                             type: snmp.ObjectType.Integer,
+                             maxAccess: snmp.MaxAccess['accessible-for-notify']
+                         }
+                     ],
+                     tableIndex: [{ columnName: "atIndex" }]
+                 });
+                 subagent.getMib().addTableRow('accessTable', [1, 10, 42, 7]);
+             });
+
+             // Drives Subagent.request directly and returns the response PDU
+             // the subagent would have sent to the master agent.
+             const requestResponse = (pduType, oid) => {
+                 let sent = null;
+                 subagent.sendResponse = (responsePdu) => { sent = responsePdu; };
+                 subagent.request(
+                     {
+                         pduType: pduType,
+                         transactionID: 1,
+                         getResponsePduForRequest: () => ({})
+                     },
+                     [ { oid: oid, type: snmp.ObjectType.Integer, value: 99 } ]
+                 );
+                 return sent;
+             };
+
+             it('answers notWritable for a TestSet of a read-only column', function() {
+                 const response = requestResponse(snmp.AgentXPduType.TestSet, readOnlyOid);
+                 assert(response, 'a response PDU should have been sent');
+                 assert.equal(response.error, snmp.ErrorStatus.NotWritable);
+                 assert.equal(response.index, 1);
+             });
+
+             it('allows a TestSet of a read-write column', function() {
+                 const response = requestResponse(snmp.AgentXPduType.TestSet, readWriteOid);
+                 assert(response, 'a response PDU should have been sent');
+                 assert.equal(response.error, snmp.ErrorStatus.NoError);
+             });
+
+             it('still answers noAccess for a Get below read-only', function() {
+                 let sent = null;
+                 subagent.sendResponse = (responsePdu, responseVarbinds) => {
+                     sent = responseVarbinds;
+                 };
+                 subagent.request(
+                     { pduType: snmp.AgentXPduType.Get, getResponsePduForRequest: () => ({}) },
+                     [ { oid: notifyOnlyOid, type: snmp.ObjectType.Integer, value: null } ]
+                 );
+                 assert(sent, 'response varbinds should have been sent');
+                 assert.equal(sent[0].errorStatus, snmp.ErrorStatus.NoAccess);
+             });
+         });
+
          describe('Set Operations Transaction Management', function() {
              let scalarProvider;
 

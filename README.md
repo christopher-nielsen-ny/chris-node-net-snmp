@@ -157,6 +157,18 @@ constants are defined in this object:
  * `NotWritable`
  * `InconsistentName`
 
+Only the first six of these - `NoError` through `GeneralError` - are defined by
+SNMPv1.  The agent produces error statuses using the full SNMPv2 set regardless
+of the version of the request, then translates them when responding to an
+SNMPv1 request, using the mapping given in RFC 2089 section 2.1 (repeated in
+RFC 3584 section 4.4).  So an SNMPv1 manager sees `NoSuchName` where an SNMPv2c
+or SNMPv3 manager would see `NoAccess`, `NoCreation`, `NotWritable`,
+`InconsistentName` or `AuthorizationError`; `BadValue` in place of `WrongType`,
+`WrongLength`, `WrongEncoding`, `WrongValue` or `InconsistentValue`; and
+`GeneralError` in place of `ResourceUnavailable`, `CommitFailed` or
+`UndoFailed`.  `ReadOnly` is listed for completeness, since SNMPv1 defines it,
+but no conformant agent generates it - see RFC 1908 section 3.1.2.
+
 ## snmp.ObjectType
 
 This object contains constants used to specify syntax for varbind objects,
@@ -2171,7 +2183,12 @@ level provided by this provider. The allowable values are the
 numeric values from the MaxAccess export. If a `maxAccess` value is
 specified, a `get` request to the agent will return a `noAccess`
 error if `maxAccess` is not at least "read-only" (2). `maxAccess`
-must be at least "read-write" (3) for a `set` request to succeed.
+must be at least "read-write" (3) for a `set` request to succeed;
+a `set` below that level returns a `notWritable` error, which is the
+code RFC 3416 section 4.2.5 reserves for a variable that exists but
+cannot be modified whatever value is supplied. Note that `noAccess`
+there means something narrower - a variable denied because it is not
+in the requester's MIB view.
  * `defVal` *(optional)* - the default value to assign for scalar
 objects automatically created, when `maxAccess` is set to
 "read-create" (4). Note that table columns can specify such `defVal`
@@ -3784,6 +3801,12 @@ Example programs are included under the module's `example` directory.
  * Reject table instance OIDs whose row index encoding is malformed, instead of silently decoding them to a different row - a SetRequest naming a non-implied `OctetString` or OID index that claimed a different length than it supplied, or that carried unexpected trailing components, would create a row at the decoded index while answering `NoSuchInstance` for the OID that was requested
 
  * Decode index parts declared with a fixed `length` without consuming a leading length component, matching the way they are encoded - an index value of `AB` in such a column previously read back as `B`
+
+# Version 3.29.0 - 13/09/2026
+
+ * Answer a SetRequest for an object whose `maxAccess` is below "read-write" with a `notWritable` error instead of `noAccess`, for both the agent and the AgentX subagent - RFC 3416 section 4.2.5 reserves `noAccess` for a variable denied because it is not in the requester's MIB view, and gives `notWritable` for one that exists but cannot be modified whatever value is supplied
+
+ * Translate error statuses to their SNMPv1 equivalents when the agent responds to a version 1 request, using the mapping in RFC 2089 section 2.1 - the agent produces statuses from the SNMPv2 set whatever version it is answering, and previously sent codes such as `noAccess` and `notWritable` to SNMPv1 managers unchanged, even though SNMPv1 defines no such values. A SetRequest for a read-only object now returns `noSuchName` to an SNMPv1 manager
 
 # License
 

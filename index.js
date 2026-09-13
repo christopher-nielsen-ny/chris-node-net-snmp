@@ -71,6 +71,27 @@ var ErrorStatus = {
 
 _expandConstantObject (ErrorStatus);
 
+// SNMPv2 introduced error-status values that carry no meaning for an SNMPv1
+// manager, whose ErrorStatus ASN.1 stops at genErr(5). A multi-lingual agent
+// must therefore translate before responding to a version 1 request. Table
+// from RFC 2089 section 2.1, repeated in RFC 3584 section 4.4. Values absent
+// from this table - noError, tooBig, noSuchName, badValue, readOnly and
+// genErr - are already valid in SNMPv1 and pass through untouched.
+var ErrorStatusV2ToV1 = {};
+ErrorStatusV2ToV1[ErrorStatus.NoAccess] = ErrorStatus.NoSuchName;
+ErrorStatusV2ToV1[ErrorStatus.WrongType] = ErrorStatus.BadValue;
+ErrorStatusV2ToV1[ErrorStatus.WrongLength] = ErrorStatus.BadValue;
+ErrorStatusV2ToV1[ErrorStatus.WrongEncoding] = ErrorStatus.BadValue;
+ErrorStatusV2ToV1[ErrorStatus.WrongValue] = ErrorStatus.BadValue;
+ErrorStatusV2ToV1[ErrorStatus.NoCreation] = ErrorStatus.NoSuchName;
+ErrorStatusV2ToV1[ErrorStatus.InconsistentValue] = ErrorStatus.BadValue;
+ErrorStatusV2ToV1[ErrorStatus.ResourceUnavailable] = ErrorStatus.GeneralError;
+ErrorStatusV2ToV1[ErrorStatus.CommitFailed] = ErrorStatus.GeneralError;
+ErrorStatusV2ToV1[ErrorStatus.UndoFailed] = ErrorStatus.GeneralError;
+ErrorStatusV2ToV1[ErrorStatus.AuthorizationError] = ErrorStatus.NoSuchName;
+ErrorStatusV2ToV1[ErrorStatus.NotWritable] = ErrorStatus.NoSuchName;
+ErrorStatusV2ToV1[ErrorStatus.InconsistentName] = ErrorStatus.NoSuchName;
+
 var ObjectType = {
 	1: "Boolean",
 	2: "Integer",
@@ -5508,14 +5529,19 @@ Agent.prototype.request = function (socket, requestMessage, rinfo) {
 					});
 				};
 			} else if ( ! this.isAllowed(requestPdu.type, providerNode.provider, instanceNode ) ) {
-				// requested access not allowed (by MAX-ACCESS)
+				// Requested access not allowed (by MAX-ACCESS). RFC 3416 section
+				// 4.2.5 reserves noAccess for a variable denied because it is not
+				// in the appropriate MIB view (rule 1); a variable that exists but
+				// can not be modified no matter what value is supplied is
+				// notWritable (rule 2). MAX-ACCESS below read-write is the latter.
+				const accessErrorStatus = isSetRequest ? ErrorStatus.NotWritable : ErrorStatus.NoAccess;
 				mibRequests[i] = new MibRequest ({
 					operation: requestPdu.type,
 					oid: requestPdu.varbinds[i].oid
 				});
 				mibRequests[i].handler = function getRanaHandler (mibRequestForRana) {
 					mibRequestForRana.done ({
-						errorStatus: ErrorStatus.NoAccess,
+						errorStatus: accessErrorStatus,
 						type: ObjectType.Null,
 						value: null
 					});
@@ -5920,6 +5946,16 @@ Agent.prototype.setSingleVarbind = function (responsePdu, index, responseVarbind
 };
 
 Agent.prototype.sendResponse = function (socket, rinfo, requestMessage, responsePdu) {
+	// The agent is multi-lingual: it answers each request in the version that
+	// request arrived with. Error statuses are produced internally using the
+	// SNMPv2 set, so a response to a version 1 request must be translated down
+	// to something an SNMPv1 manager understands - RFC 2089 section 2.1.
+	if ( requestMessage.version == Version1 ) {
+		const version1ErrorStatus = ErrorStatusV2ToV1[responsePdu.errorStatus];
+		if ( version1ErrorStatus !== undefined ) {
+			responsePdu.errorStatus = version1ErrorStatus;
+		}
+	}
 	var responseMessage = requestMessage.createResponseForRequest (responsePdu);
 	this.listener.send (responseMessage, rinfo, socket);
 	this.callback (null, Listener.formatCallbackData (responseMessage.pdu, rinfo) );
@@ -6749,8 +6785,11 @@ Subagent.prototype.request = function (pdu, requestVarbinds) {
 				});
 				mibRequests[i].handler = providerNode.provider.handler;
 				if ( ! me.isAllowed(pdu.pduType, mibRequests[i].providerNode?.provider, mibRequests[i].instanceNode) ) {
+					// A set below read-write MAX-ACCESS is notWritable, not
+					// noAccess - RFC 3416 section 4.2.5 rule 2, and RFC 2741
+					// section 7.2.1.4 for the AgentX TestSet phase.
 					mibRequests[i].error = {
-						errorStatus: ErrorStatus.NoAccess,
+						errorStatus: isSetRequest ? ErrorStatus.NotWritable : ErrorStatus.NoAccess,
 						errorIndex: i + 1,
 						type: ObjectType.Null,
 						value: null
