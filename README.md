@@ -3808,6 +3808,10 @@ Example programs are included under the module's `example` directory.
 
  * Translate error statuses to their SNMPv1 equivalents when the agent responds to a version 1 request, using the mapping in RFC 2089 section 2.1 - the agent produces statuses from the SNMPv2 set whatever version it is answering, and previously sent codes such as `noAccess` and `notWritable` to SNMPv1 managers unchanged, even though SNMPv1 defines no such values. A SetRequest for a read-only object now returns `noSuchName` to an SNMPv1 manager
 
+# Version 3.29.1 - 13/09/2026
+
+ * Upgrade the Mocha test framework to version 12, clearing the outstanding `serialize-javascript` and `diff` security advisories from the dependency tree - both were development-only transitive dependencies of the test toolchain and were never part of the published package, so no user of the library was exposed. Running the test suite now requires Node.js `^20.19.0 || >=22.12.0`; the library itself is unaffected
+
 # License
 
 Copyright (c) 2020 Mark Abrahams <mark@abrahams.co.nz>
